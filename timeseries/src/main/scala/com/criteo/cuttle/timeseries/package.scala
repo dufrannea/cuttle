@@ -35,5 +35,5 @@ package object timeseries {
 
   def hourly(start: Instant) = TimeSeries(grid = Hourly, start)
   def daily(start: Instant, tz: ZoneId) = TimeSeries(grid = Daily(tz), start)
-
+  def minutely(start : Instant) = TimeSeries(grid = Minutely, start)
 }

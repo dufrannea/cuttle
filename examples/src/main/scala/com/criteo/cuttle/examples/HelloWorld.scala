@@ -11,10 +11,10 @@ object HelloWorld {
 
   def main(args: Array[String]): Unit = {
     // 7 days ago at 00:00 UTC
-    val start: Instant = LocalDate.now.minusDays(7).atStartOfDay.toInstant(UTC)
+    val start: Instant = LocalDate.now.atStartOfDay.toInstant(UTC).minusSeconds(120)
 
     val hello1 =
-      Job("hello1", hourly(start), "Hello 1") { implicit e =>
+      Job("hello1", minutely(start), "Hello 1") { implicit e =>
         sh"""
           echo "Hello 1"
           echo check my project page https://github.com/criteo/cuttle

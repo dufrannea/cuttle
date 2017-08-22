@@ -18,7 +18,7 @@ import java.time.temporal.ChronoUnit._
 import java.time.ZoneOffset.UTC
 import java.time.temporal.{ChronoUnit, TemporalAdjusters}
 
-import com.criteo.cuttle.timeseries.TimeSeriesGrid.{Daily, Hourly, Monthly}
+import com.criteo.cuttle.timeseries.TimeSeriesGrid.{Daily, Hourly, Monthly, Minutely}
 import intervals.{Bound, Interval, IntervalMap}
 import Bound.{Bottom, Finite, Top}
 
@@ -61,6 +61,10 @@ sealed trait TimeSeriesGridView extends TimeSeriesGrid {
 
 object TimeSeriesGrid {
 
+  case object Minutely extends TimeSeriesGrid {
+    def truncate(t:Instant) = t.truncatedTo(MINUTES)
+    def next(t:Instant) = t.truncatedTo(MINUTES).plus(1,MINUTES)
+  }
   case object Hourly extends TimeSeriesGrid {
     def truncate(t: Instant) = t.truncatedTo(HOURS)
     def next(t: Instant) =
@@ -79,6 +83,7 @@ object TimeSeriesGrid {
 
   implicit val gridEncoder = new Encoder[TimeSeriesGrid] {
     override def apply(grid: TimeSeriesGrid) = grid match {
+      case Minutely => Json.obj("period" -> "minutely".asJson)
       case Hourly => Json.obj("period" -> "hourly".asJson)
       case Daily(tz: ZoneId) =>
         Json.obj(
@@ -99,6 +104,9 @@ object TimeSeriesGridView {
     def next(t: Instant) = (1 to n).foldLeft(grid.truncate(t))((acc, _) => grid.next(acc))
     val aggregationFactor = agg
     def upper(): TimeSeriesGridView
+  }
+  case class MinutelyView(agg:Int) extends GenericView(1, Minutely, agg) {
+    override def upper: TimeSeriesGridView = new HourlyView(agg *  60)
   }
   case class HourlyView(agg: Int) extends GenericView(1, Hourly, agg) {
     override def upper: TimeSeriesGridView = new DailyView(UTC, agg * 24)

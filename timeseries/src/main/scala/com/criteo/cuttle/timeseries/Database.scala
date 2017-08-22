@@ -96,6 +96,7 @@ private[timeseries] object Database {
 
   def serializeContext(context: TimeSeriesContext): ConnectionIO[String] =
     sql"""
+      BAM
       REPLACE INTO timeseries_contexts (id, json, ctx_range, backfill_id)
       VALUES (
         ${context.toString},
