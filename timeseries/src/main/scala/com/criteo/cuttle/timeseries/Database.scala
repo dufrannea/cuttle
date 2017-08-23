@@ -96,7 +96,7 @@ private[timeseries] object Database {
 
   def serializeContext(context: TimeSeriesContext): ConnectionIO[String] =
     sql"""
-      BAM
+
       REPLACE INTO timeseries_contexts (id, json, ctx_range, backfill_id)
       VALUES (
         ${context.toString},
@@ -109,8 +109,13 @@ private[timeseries] object Database {
       )
     """.update.run *> Applicative[ConnectionIO].pure(context.toString)
 
+  /**
+    * Reads the state from the database.
+    * State is optional, there is nothing in timeseries_state at first run
+    */
   def deserializeState(implicit jobs: Set[Job[TimeSeries]]): ConnectionIO[Option[State]] = {
     type StoredState = List[(String, List[(Interval[Instant], JobState)])]
+
     OptionT {
       sql"SELECT state FROM timeseries_state ORDER BY date DESC LIMIT 1"
         .query[Json]
