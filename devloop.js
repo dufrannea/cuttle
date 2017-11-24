@@ -16,12 +16,12 @@ let generateClasspath = sbt.run({
 let database = runServer({
   name: 'mysqld',
   httpPort: 3388,
-  sh: 'java -cp `cat /tmp/classpath_com.criteo.cuttle.localdb` com.criteo.cuttle.localdb.LocalDB',
+  sh: 'java -cp `cat /tmp/classpath_com.example.localdb` com.example.localdb.LocalDB',
 }).dependsOn(generateClasspath)
 
 let server = runServer({
   httpPort: 8888,
-  sh: 'java -cp `cat /tmp/classpath_com.criteo.cuttle.examples` com.criteo.cuttle.examples.HelloWorld',
+  sh: 'java -cp `cat /tmp/classpath_com.example.example` com.example.Main',
   env: {
     MYSQL_HOST: 'localhost',
     MYSQL_PORT: '3388',

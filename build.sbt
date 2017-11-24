@@ -4,7 +4,7 @@ val writeClasspath = taskKey[File]("Write the project classpath to a file.")
 val VERSION = "0.2.2"
 
 lazy val commonSettings = Seq(
-  organization := "com.criteo.cuttle",
+  organization := "com.example",
   version := VERSION,
   scalaVersion := "2.11.11",
   crossScalaVersions := Seq("2.11.11", "2.12.3"),
@@ -37,102 +37,6 @@ lazy val commonSettings = Seq(
     streams.value.log.info(f.getAbsolutePath)
     f
   },
-  // Maven config
-  credentials += Credentials(
-    "Sonatype Nexus Repository Manager",
-    "oss.sonatype.org",
-    "criteo-oss",
-    sys.env.getOrElse("SONATYPE_PASSWORD", "")
-  ),
-  publishTo := Some(
-    if (isSnapshot.value)
-      Opts.resolver.sonatypeSnapshots
-    else
-      Opts.resolver.sonatypeStaging
-  ),
-  pgpPassphrase := sys.env.get("SONATYPE_PASSWORD").map(_.toArray),
-  pgpSecretRing := file(".travis/secring.gpg"),
-  pgpPublicRing := file(".travis/pubring.gpg"),
-  pomExtra in Global := {
-    <url>https://github.com/criteo/cuttle</url>
-    <licenses>
-      <license>
-        <name>Apache 2</name>
-        <url>http://www.apache.org/licenses/LICENSE-2.0.txt</url>
-      </license>
-    </licenses>
-    <scm>
-      <connection>scm:git:github.com/criteo/cuttle.git</connection>
-      <developerConnection>scm:git:git@github.com:criteo/cuttle.git</developerConnection>
-      <url>github.com/criteo/cuttle</url>
-    </scm>
-    <developers>
-      <developer>
-        <name>Guillaume Bort</name>
-        <email>g.bort@criteo.com</email>
-        <url>https://github.com/guillaumebort</url>
-        <organization>Criteo</organization>
-        <organizationUrl>http://www.criteo.com</organizationUrl>
-      </developer>
-      <developer>
-        <name>Adrien Surée</name>
-        <email>a.suree@criteo.com</email>
-        <url>https://github.com/haveo</url>
-        <organization>Criteo</organization>
-        <organizationUrl>http://www.criteo.com</organizationUrl>
-      </developer>
-      <developer>
-        <name>Justin Coffey</name>
-        <email>j.coffey@criteo.com</email>
-        <url>https://github.com/jqcoffey</url>
-        <organization>Criteo</organization>
-        <organizationUrl>http://www.criteo.com</organizationUrl>
-      </developer>
-      <developer>
-        <name>Vincent Guerci</name>
-        <email>v.guerci@criteo.com</email>
-        <url>https://github.com/vguerci</url>
-        <organization>Criteo</organization>
-        <organizationUrl>http://www.criteo.com</organizationUrl>
-      </developer>
-      <developer>
-        <name>Alexandre Careil</name>
-        <email>a.careil@criteo.com</email>
-        <url>https://github.com/hhalex</url>
-        <organization>Criteo</organization>
-        <organizationUrl>http://www.criteo.com</organizationUrl>
-      </developer>
-      <developer>
-        <name>Arnaud Dufranne</name>
-        <email>a.dufranne@criteo.com</email>
-        <url>https://github.com/dufrannea</url>
-        <organization>Criteo</organization>
-        <organizationUrl>http://www.criteo.com</organizationUrl>
-      </developer>
-      <developer>
-        <name>Alexey Eryshev</name>
-        <email>a.eryshev@criteo.com</email>
-        <url>https://github.com/eryshev</url>
-        <organization>Criteo</organization>
-        <organizationUrl>http://www.criteo.com</organizationUrl>
-      </developer>
-      <developer>
-        <name>Jean-Philippe Lam Yee Mui</name>
-        <email>jp.lamyeemui@criteo.com</email>
-        <url>https://github.com/Masuzu</url>
-        <organization>Criteo</organization>
-        <organizationUrl>http://www.criteo.com</organizationUrl>
-      </developer>
-      <developer>
-        <name>Jean-Baptiste Catté</name>
-        <email>jb.catte@criteo.com</email>
-        <url>https://github.com/jbkt</url>
-        <organization>Criteo</organization>
-        <organizationUrl>http://www.criteo.com</organizationUrl>
-      </developer>
-    </developers>
-  },
-  // Useful to run flakey tests
   commands += Command.single("repeat") { (state, arg) =>
     arg :: s"repeat $arg" :: state
   },
@@ -170,8 +74,8 @@ lazy val localdb = {
     )
 }
 
-lazy val examples =
-  (project in file("examples"))
+lazy val example =
+  (project in file("example"))
     .settings(commonSettings: _*)
     .settings(
       publishArtifact := false,
@@ -182,39 +86,10 @@ lazy val examples =
         "com.criteo.cuttle" % "timeseries_2.11" % "0.2.2"
       )
     )
-    .settings(
-      Option(System.getProperty("generateExamples"))
-        .map(_ =>
-          Seq(
-            autoCompilerPlugins := true,
-            addCompilerPlugin("com.criteo.socco" %% "socco-plugin" % "0.1.7"),
-            scalacOptions := Seq(
-              "-P:socco:out:examples/target/html",
-              "-P:socco:package_com.criteo.cuttle:https://criteo.github.io/cuttle/api/"
-            )
-        ))
-        .getOrElse(Nil): _*
-    )
     .dependsOn(localdb)
 
 lazy val root =
   (project in file("."))
     .enablePlugins(ScalaUnidocPlugin)
     .settings(commonSettings: _*)
-    // .settings(
-    //   publishArtifact := false,
-    //   scalacOptions in (ScalaUnidoc, unidoc) ++= Seq(
-    //     Seq(
-    //       "-sourcepath",
-    //       baseDirectory.value.getAbsolutePath
-    //     ),
-    //     Opts.doc.title("cuttle"),
-    //     Opts.doc.version(VERSION),
-    //     Opts.doc.sourceUrl("https://github.com/criteo/cuttle/blob/master€{FILE_PATH}.scala"),
-    //     Seq(
-    //       "-doc-root-content",
-    //       (baseDirectory.value / "core/src/main/scala/root.scala").getAbsolutePath
-    //     )
-    //   ).flatten
-    // )
-    .aggregate(examples, localdb)
+    .aggregate(example, localdb)

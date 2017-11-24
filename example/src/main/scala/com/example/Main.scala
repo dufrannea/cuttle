@@ -2,7 +2,7 @@
 
 // This a very simple cuttle project using the time series scheduler
 // to execute a bunch of shell scripts
-package com.criteo.cuttle.examples
+package com.example
 
 // The main package contains everything needed to create
 // a cuttle project.
@@ -22,7 +22,7 @@ import java.time._
 
 import scala.concurrent.duration._
 
-object HelloWorld {
+object Main {
 
   // A cuttle project is just embeded into any Scala application.
   def main(args: Array[String]): Unit = {

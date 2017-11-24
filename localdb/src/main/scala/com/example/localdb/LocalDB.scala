@@ -1,4 +1,4 @@
-package com.criteo.cuttle.localdb
+package com.example.localdb
 
 import com.wix.mysql._
 import com.wix.mysql.config._
