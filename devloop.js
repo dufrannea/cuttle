@@ -19,20 +19,6 @@ let database = runServer({
   sh: 'java -cp `cat /tmp/classpath_com.criteo.cuttle.localdb` com.criteo.cuttle.localdb.LocalDB',
 }).dependsOn(generateClasspath)
 
-let yarn = run({
-  sh: 'yarn install',
-  watch: 'package.json'
-});
-
-let front = webpack({
-  watch: [
-    'webpack.config.js',
-    'core/src/main/javascript/**/*.*',
-    'core/src/main/html/**/*.*',
-    'core/src/main/style/**/*.*'
-  ]
-}).dependsOn(yarn, compile);
-
 let server = runServer({
   httpPort: 8888,
   sh: 'java -cp `cat /tmp/classpath_com.criteo.cuttle.examples` com.criteo.cuttle.examples.HelloWorld',
@@ -45,4 +31,4 @@ let server = runServer({
   }
 }).dependsOn(compile, generateClasspath, database);
 
-proxy(server, 8080).dependsOn(front);
+proxy(server, 8080).dependsOn(compile);

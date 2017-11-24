@@ -138,7 +138,7 @@ lazy val commonSettings = Seq(
   },
   // Run an example in another JVM, and quit on key press
   commands += Command.single("example") { (state, arg) =>
-    s"examples/test:runMain com.criteo.cuttle.examples.TestExample $arg" :: state
+    s"/test:runMain com.criteo.cuttle.examples.TestExample $arg" :: state
   }
 )
 
@@ -170,79 +170,17 @@ lazy val localdb = {
     )
 }
 
-lazy val cuttle =
-  (project in file("core"))
-    .settings(commonSettings: _*)
-    .settings(
-      libraryDependencies ++= Seq(
-        "com.criteo.lolhttp" %% "lolhttp",
-        "com.criteo.lolhttp" %% "loljson",
-        "com.criteo.lolhttp" %% "lolhtml"
-      ).map(_ % "0.5.1"),
-      libraryDependencies ++= Seq("core", "generic", "parser")
-        .map(module => "io.circe" %% s"circe-${module}" % "0.7.1"),
-      libraryDependencies ++= Seq(
-        "de.sciss" %% "fingertree" % "1.5.2",
-        "org.scala-stm" %% "scala-stm" % "0.8",
-        "org.scala-lang" % "scala-reflect" % scalaVersion.value,
-        "org.typelevel" %% "cats" % "0.9.0",
-        "codes.reactive" %% "scala-time" % "0.4.1",
-        "com.zaxxer" % "nuprocess" % "1.1.0"
-      ),
-      libraryDependencies ++= Seq(
-        "org.tpolecat" %% "doobie-core-cats",
-        "org.tpolecat" %% "doobie-hikari-cats"
-      ).map(_ % "0.4.1"),
-      libraryDependencies ++= Seq(
-        "mysql" % "mysql-connector-java" % "6.0.6"
-      ),
-      libraryDependencies ++= Seq(
-        "org.scalatest" %% "scalatest" % "3.0.1"
-      ).map(_ % "test"),
-      // Webpack
-      resourceGenerators in Compile += Def.task {
-        import scala.sys.process._
-        val streams0 = streams.value
-        val webpackOutputDir: File = (resourceManaged in Compile).value / "public"
-        if (devMode.value) {
-          streams0.log.warn(s"Skipping webpack resource generation.")
-          Nil
-        } else {
-          def listFiles(dir: File): Seq[File] =
-            IO.listFiles(dir)
-              .flatMap(f =>
-                if (f.isDirectory) listFiles(f)
-                else Seq(f))
-          val logger = new ProcessLogger {
-            override def err(s: => String): Unit = streams0.log.info(s"ERR, $s")
-            override def buffer[T](f: => T): T = f
-            override def out(s: => String): Unit = streams0.log.info(s)
-          }
-          logger.out(s"Generating UI assets to $webpackOutputDir...")
-          assert(s"yarn install" ! logger == 0, "yarn failed")
-          logger.out("Running webpack...")
-          assert(s"./node_modules/webpack/bin/webpack.js --output-path $webpackOutputDir --bail" ! logger == 0,
-                 "webpack failed")
-          listFiles(webpackOutputDir)
-        }
-      }.taskValue,
-      cleanFiles += (file(".") / "node_modules")
-    )
-
-lazy val timeseries =
-  (project in file("timeseries"))
-    .settings(commonSettings: _*)
-    .settings(
-      )
-    .dependsOn(cuttle % "compile->compile;test->test")
-
 lazy val examples =
   (project in file("examples"))
     .settings(commonSettings: _*)
     .settings(
       publishArtifact := false,
       fork in Test := true,
-      connectInput in Test := true
+      connectInput in Test := true,
+      libraryDependencies ++= Seq(
+        "com.criteo.cuttle" % "cuttle_2.11" % "0.2.2",
+        "com.criteo.cuttle" % "timeseries_2.11" % "0.2.2"
+      )
     )
     .settings(
       Option(System.getProperty("generateExamples"))
@@ -257,48 +195,26 @@ lazy val examples =
         ))
         .getOrElse(Nil): _*
     )
-    .dependsOn(cuttle, timeseries, localdb)
+    .dependsOn(localdb)
 
 lazy val root =
   (project in file("."))
     .enablePlugins(ScalaUnidocPlugin)
     .settings(commonSettings: _*)
-    .settings(
-      publishArtifact := false,
-      scalacOptions in (ScalaUnidoc, unidoc) ++= Seq(
-        Seq(
-          "-sourcepath",
-          baseDirectory.value.getAbsolutePath
-        ),
-        Opts.doc.title("cuttle"),
-        Opts.doc.version(VERSION),
-        Opts.doc.sourceUrl("https://github.com/criteo/cuttle/blob/master€{FILE_PATH}.scala"),
-        Seq(
-          "-doc-root-content",
-          (baseDirectory.value / "core/src/main/scala/root.scala").getAbsolutePath
-        )
-      ).flatten,
-      unidocAllAPIMappings in (ScalaUnidoc, unidoc) ++= {
-        val allJars = {
-          (fullClasspath in cuttle in Compile).value ++
-            (fullClasspath in timeseries in Compile).value
-        }
-        Seq(
-          allJars
-            .flatMap(x => x.metadata.get(moduleID.key).map(m => x.data -> m))
-            .collect {
-              case (jar, module) if module.name == "scala-library" =>
-                jar -> url("https://www.scala-lang.org/api/current/")
-              case (jar, module) if module.name.contains("doobie") =>
-                jar -> url("https://www.javadoc.io/doc/org.tpolecat/doobie-core_2.12/0.4.1/")
-              case (jar, module) if module.name.contains("lolhttp") =>
-                jar -> url("https://criteo.github.io/lolhttp/api/")
-              case (jar, module) if module.name.contains("circe") =>
-                jar -> url("http://circe.github.io/circe/api/")
-            }
-            .toMap
-        )
-      },
-      unidocProjectFilter in (ScalaUnidoc, unidoc) := inProjects(cuttle, timeseries)
-    )
-    .aggregate(cuttle, timeseries, examples, localdb)
+    // .settings(
+    //   publishArtifact := false,
+    //   scalacOptions in (ScalaUnidoc, unidoc) ++= Seq(
+    //     Seq(
+    //       "-sourcepath",
+    //       baseDirectory.value.getAbsolutePath
+    //     ),
+    //     Opts.doc.title("cuttle"),
+    //     Opts.doc.version(VERSION),
+    //     Opts.doc.sourceUrl("https://github.com/criteo/cuttle/blob/master€{FILE_PATH}.scala"),
+    //     Seq(
+    //       "-doc-root-content",
+    //       (baseDirectory.value / "core/src/main/scala/root.scala").getAbsolutePath
+    //     )
+    //   ).flatten
+    // )
+    .aggregate(examples, localdb)
