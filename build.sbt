@@ -168,7 +168,9 @@ lazy val localdb = {
     )
 }
 
-val doobieVersion = "0.5.0"
+val doobieVersion = "0.6.0-M2"
+
+val http4sVersion = "0.19.0-M1"
 
 lazy val cuttle =
   (project in file("core"))
@@ -177,18 +179,19 @@ lazy val cuttle =
     .settings(Defaults.itSettings: _*)
     .settings(
       libraryDependencies ++= Seq(
-        "com.criteo.lolhttp" %% "lolhttp",
-        "com.criteo.lolhttp" %% "loljson",
-        "com.criteo.lolhttp" %% "lolhtml"
-      ).map(_ % "0.9.3"),
+        "org.http4s" %% "http4s-dsl" % http4sVersion,
+        "org.http4s" %% "http4s-blaze-server" % http4sVersion,
+        "org.http4s" %% "http4s-blaze-client" % http4sVersion,
+        "org.http4s" %% "http4s-circe" % http4sVersion
+      ),
       libraryDependencies ++= Seq("core", "generic", "parser", "java8")
-        .map(module => "io.circe" %% s"circe-${module}" % "0.9.1"),
+        .map(module => "io.circe" %% s"circe-$module" % "0.10.0-M1"),
       libraryDependencies ++= Seq(
         "de.sciss" %% "fingertree" % "1.5.2",
         "org.scala-stm" %% "scala-stm" % "0.8",
         "org.scala-lang" % "scala-reflect" % scalaVersion.value,
-        "org.typelevel" %% "cats-core" % "1.0.1",
-        "org.typelevel" %% "cats-mtl-core" % "0.2.3",
+        "org.typelevel" %% "cats-core" % "1.1.0",
+        "org.typelevel" %% "cats-mtl-core" % "0.3.0",
         "codes.reactive" %% "scala-time" % "0.4.1",
         "com.zaxxer" % "nuprocess" % "1.1.0"
       ),

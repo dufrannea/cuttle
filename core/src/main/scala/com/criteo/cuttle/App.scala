@@ -2,31 +2,29 @@ package com.criteo.cuttle
 
 import scala.concurrent.duration._
 import scala.util._
-
 import cats.Eq
-import cats.effect.IO
 import cats.implicits._
 import fs2.Stream
-
 import io.circe._
 import io.circe.syntax._
 import io.circe.java8.time._
-
-import lol.http._
-import lol.json._
-
 import com.criteo.cuttle.Auth._
 import com.criteo.cuttle.ExecutionContexts.Implicits.serverExecutionContext
 import com.criteo.cuttle.ExecutionContexts._
 import com.criteo.cuttle.ExecutionStatus._
 import com.criteo.cuttle.Metrics.{Gauge, Prometheus}
 import com.criteo.cuttle.utils.getJVMUptime
+import org.http4s.HttpRoutes
+import cats.effect._
+import org.http4s._
+import org.http4s.dsl.io._
 
 private[cuttle] object App {
-  private val SC = utils.createScheduler("com.criteo.cuttle.App.SC")
+  // TODO do not use default scheduler
+  def sse[A](thunk: IO[Option[A]], encode: A => IO[Json])(implicit eqInstance: Eq[A]): Response[IO] = {
+    implicit val timer: Timer[IO] = ???
 
-  def sse[A](thunk: IO[Option[A]], encode: A => IO[Json])(implicit eqInstance: Eq[A]): lol.http.Response = {
-    val stream = (Stream.emit(()) ++ SC.fixedRate[IO](1.second))
+    val stream = (Stream.emit(()) ++ Stream.sleep(1.second)).covary[IO]
       .evalMap(_ => IO.shift.flatMap(_ => thunk))
       .flatMap({
         case Some(x) => Stream(x)
@@ -34,9 +32,10 @@ private[cuttle] object App {
       })
       .changes
       .evalMap(r => encode(r))
-      .map(ServerSentEvents.Event(_))
+      //.map(ServerSentEvents.Event(_))
 
     Ok(stream)
+    ???
   }
 
   implicit def projectEncoder[S <: Scheduling] = new Encoder[CuttleProject[S]] {
@@ -155,19 +154,19 @@ private[cuttle] case class App[S <: Scheduling](project: CuttleProject[S], execu
   private def parseJobIds(jobsQueryString: String): Set[String] =
     jobsQueryString.split(",").filter(_.trim().nonEmpty).toSet
 
-  private def getJobsOrNotFound(jobsQueryString: String): Either[Response, Set[Job[S]]] = {
+  private def getJobsOrNotFound(jobsQueryString: String): Either[Response[IO], Set[Job[S]]] = {
     val jobsNames = parseJobIds(jobsQueryString)
     if (jobsNames.isEmpty) Right(workflow.vertices)
     else {
       val jobs = workflow.vertices.filter(v => jobsNames.contains(v.id))
-      if (jobs.isEmpty) Left(NotFound)
+      if (jobs.isEmpty) Left(NotFound())
       else Right(jobs)
     }
   }
 
-  val publicApi: PartialService = {
+  val publicApi: HttpRoutes[IO] = HttpRoutes.of[IO] {
 
-    case GET at url"/api/status" => {
+    case GET -> Root / "api" / "status" =>
       val projectJson = (status: String) =>
         Json.obj(
           "project" -> project.name.asJson,
@@ -178,9 +177,9 @@ private[cuttle] case class App[S <: Scheduling](project: CuttleProject[S], execu
         case Success(_) => Ok(projectJson("ok"))
         case _          => InternalServerError(projectJson("ko"))
       }
-    }
-
-    case GET at url"/api/statistics?events=$events&jobs=$jobs" =>
+    case r@GET -> Root / "api" / "statistics" =>
+      val jobs = r.params.getOrElse("jobs", "")
+      val events = r.params.getOrElse("events", "")
       val jobIds = parseJobIds(jobs)
       val ids = if (jobIds.isEmpty) allIds else jobIds
 
@@ -203,29 +202,34 @@ private[cuttle] case class App[S <: Scheduling](project: CuttleProject[S], execu
 
       events match {
         case "true" | "yes" =>
-          sse(IO.suspend(getStats), (x: (Json, Json)) => IO(asJson(x)))
+          IO(sse(IO.suspend(getStats), (x: (Json, Json)) => IO(asJson(x))))
         case _ => getStats.map(_.map(stat => Ok(asJson(stat))).getOrElse(InternalServerError))
       }
 
-    case GET at url"/api/statistics/$jobName" =>
+    case GET -> Root / "api" / "statistics" / jobName =>
       executor
         .jobStatsForLastThirtyDays(jobName)
-        .map(stats => Ok(stats.asJson))
+        .flatMap(stats => Ok(stats.asJson))
 
-    case GET at url"/version" => Ok(project.version)
+    case GET -> Root / "version" => Ok(project.version)
 
-    case GET at "/metrics" =>
+    case GET -> Root / "metrics" =>
       val metrics =
         executor.getMetrics(allIds, workflow) ++
           scheduler.getMetrics(allIds, workflow) :+
           Gauge("cuttle_jvm_uptime_seconds").labeled(("version", project.version), getJVMUptime)
       Ok(Prometheus.serialize(metrics))
 
-    case GET at url"/api/executions/status/$kind?limit=$l&offset=$o&events=$events&sort=$sort&order=$order&jobs=$jobs" =>
+    case r@GET -> Root / "api" / "executions" / "status" / kind =>
+      val jobs = r.params.getOrElse("jobs", "")
       val jobIds = parseJobIds(jobs)
-      val limit = Try(l.toInt).toOption.getOrElse(25)
-      val offset = Try(o.toInt).toOption.getOrElse(0)
+      val limit = r.params.get("limit").flatMap(p => Try(p.toInt).toOption).getOrElse(25)
+      val offset = r.params.get("offset").flatMap(p => Try(p.toInt).toOption).getOrElse(0)
+      val order = r.params.getOrElse("order", "")
       val asc = order.toLowerCase == "asc"
+      val sort = r.params.getOrElse("sort", "")
+      val events = r.params.getOrElse("events", "")
+
       val ids = if (jobIds.isEmpty) allIds else jobIds
 
       def getExecutions: IO[Option[(Int, List[ExecutionLog])]] = kind match {
@@ -278,143 +282,141 @@ private[cuttle] case class App[S <: Scheduling](project: CuttleProject[S], execu
 
       events match {
         case "true" | "yes" =>
-          sse(getExecutions, asJson)
+          IO(sse(getExecutions, asJson))
         case _ =>
-          getExecutions
-            .flatMap(
-              _.map(e => asJson(e).map(json => Ok(json)))
-                .getOrElse(NotFound))
+          getExecutions.flatMap {
+            _.map(e => asJson(e).flatMap(json => Ok(json)))
+              .getOrElse(NotFound())
+          }
       }
 
-    case GET at url"/api/executions/$id?events=$events" =>
+    case r@GET -> Root / "api" / "executions" / id =>
+      val events = r.params.getOrElse("events", "")
       def getExecution = IO.suspend(executor.getExecution(scheduler.allContexts, id))
 
       events match {
         case "true" | "yes" =>
-          sse(getExecution, (e: ExecutionLog) => IO(e.asJson))
+          IO(sse(getExecution, (e: ExecutionLog) => IO(e.asJson)))
         case _ =>
-          getExecution.map(_.map(e => Ok(e.asJson)).getOrElse(NotFound))
+          getExecution.flatMap(_.map(e => Ok(e.asJson)).getOrElse(NotFound()))
       }
 
-    case req @ GET at url"/api/executions/$id/streams" =>
+    case req @ GET -> Root / "api" / "executions" / id / streams =>
       lazy val streams = executor.openStreams(id)
-      req.headers.get(h"Accept").contains(h"text/event-stream") match {
+      req.headers.get(org.http4s.headers.Accept).contains(MediaType.`text/event-stream`.withQValue(QValue.One)) match {
         case true =>
           Ok(
-            fs2.Stream(ServerSentEvents.Event("BOS".asJson)) ++
+            fs2.Stream(ServerSentEvent("BOS".asJson.toString())) ++
               streams
                 .through(fs2.text.utf8Decode)
                 .through(fs2.text.lines)
                 .chunks
-                .map(chunk => ServerSentEvents.Event(Json.fromValues(chunk.toArray.toIterable.map(_.asJson)))) ++
-              fs2.Stream(ServerSentEvents.Event("EOS".asJson))
+                .map(chunk => ServerSentEvent(
+                  Json.fromValues(chunk.toArray.toIterable.map(_.asJson)).toString())) ++
+              fs2.Stream(ServerSentEvent("EOS".asJson.toString))
           )
         case false =>
-          Ok(
-            Content(
-              stream = streams,
-              headers = Map(h"Content-Type" -> h"text/plain")
-            ))
+          Ok(streams, org.http4s.headers.`Content-Type`(MediaType.text.plain))
       }
 
-    case GET at "/api/jobs/paused" =>
+    case GET -> Root / "api" / "jobs" / "paused" =>
       Ok(executor.pausedJobs.asJson)
 
-    case GET at "/api/project_definition" =>
+    case GET -> Root / "api" / "project_definition" =>
       Ok(project.asJson)
 
-    case GET at "/api/workflow_definition" =>
+    case GET -> Root / "api" / "workflow_definition" =>
       Ok(workflow.asJson)
   }
 
-  val privateApi: AuthenticatedService = {
-    case POST at url"/api/executions/$id/cancel" => { implicit user =>
-      executor.cancelExecution(id)
-      Ok
-    }
+  val privateApi: AuthedService[User, IO] = AuthedService {
+    case POST -> Root / "api" / "executions" / id / "cancel" as user =>
+      executor.cancelExecution(id)(user)
+      Ok()
 
-    case POST at url"/api/executions/$id/force/success" => { implicit user =>
-      executor.forceSuccess(id)
-      IO.pure(Ok)
-    }
+    case POST -> Root / "api" / "executions" / id / "force" / "success" as user =>
+      executor.forceSuccess(id)(user)
+      Ok()
 
-    case POST at url"/api/jobs/pause?jobs=$jobs" => { implicit user =>
+    case r@POST -> Root / "api" / "jobs" / "pause" as user =>
+      val jobs = r.req.params.getOrElse("job", "")
       getJobsOrNotFound(jobs).fold(IO.pure, jobs => {
         executor.pauseJobs(jobs)
-        Ok
+        Ok()
       })
-    }
 
-    case POST at url"/api/jobs/resume?jobs=$jobs" => { implicit user =>
+    case r@POST -> Root / "api" / "jobs" / "resume" as user =>
+      val jobs = r.req.params.getOrElse("job", "")
+
       getJobsOrNotFound(jobs).fold(IO.pure, jobs => {
         executor.resumeJobs(jobs)
-        Ok
+        Ok()
       })
-    }
-    case POST at url"/api/jobs/all/unpause" => { implicit user =>
+    case POST -> Root / "api" / "jobs" / "all" / "unpause" as user =>
       executor.resumeJobs(workflow.vertices)
-      Ok
-    }
-    case POST at url"/api/jobs/$id/unpause" => { implicit user =>
-      workflow.vertices.find(_.id == id).fold(NotFound) { job =>
+      Ok()
+    case POST -> Root / "api" / "jobs" / id / "unpause" as user =>
+      workflow.vertices.find(_.id == id).fold(NotFound()) { job =>
         executor.resumeJobs(Set(job))
-        Ok
+        Ok()
       }
-    }
-    case POST at url"/api/executions/relaunch?jobs=$jobs" => { implicit user =>
+    case r@POST -> Root / "api" / "executions" / "relaunch" as user =>
+      val jobs = r.req.params.getOrElse("jobs", "")
       val filteredJobs = Try(jobs.split(",").toSeq.filter(_.nonEmpty)).toOption
         .filter(_.nonEmpty)
         .getOrElse(allIds)
         .toSet
 
       executor.relaunch(filteredJobs)
-      IO.pure(Ok)
-    }
+      Ok()
 
-    case req @ GET at url"/api/shutdown" => { implicit user =>
+    case req @ GET -> Root / "api" / "shutdown" as user =>
       import scala.concurrent.duration._
 
-      req.queryStringParameters.get("gracePeriodSeconds") match {
+      req.req.params.get("gracePeriodSeconds") match {
         case Some(s) =>
           Try(s.toLong) match {
             case Success(s) if s > 0 =>
               executor.gracefulShutdown(Duration(s, SECONDS))
-              Ok
+              Ok()
             case _ =>
               BadRequest("gracePeriodSeconds should be a positive integer")
           }
         case None =>
-          req.queryStringParameters.get("hard") match {
+          req.req.params.get("hard") match {
             case Some(_) =>
               executor.hardShutdown()
-              Ok
+              Ok()
             case None =>
               BadRequest("Either gracePeriodSeconds or hard should be specified as query parameter")
           }
-      }
-    }
+     }
+  }
+  import cats.implicits._
+  import org.http4s.implicits._
+
+  val papi: HttpRoutes[IO] = project.authenticator(privateApi)
+  val api: HttpRoutes[IO] = ??? // publicApi.combineK(papi)
+
+  val publicAssets: HttpRoutes[IO] = HttpRoutes.of[IO] {
+    case GET -> Root / "public" / file =>
+      StaticFile.fromResource[IO](s"/public/$file").getOrElseF(NotFound())
   }
 
-  val api = publicApi orElse project.authenticator(privateApi)
-
-  val publicAssets: PartialService = {
-    case GET at url"/public/$file" =>
-      ClasspathResource(s"/public/$file").fold(NotFound)(r => Ok(r))
-  }
-
-  val index: AuthenticatedService = {
-    case req if req.url.startsWith("/api/") =>
+  val index: AuthedService[IO, User] = AuthedService[User, IO] {
+    // TODO check
+    case req if req.req.uri.toString().startsWith("/api/") =>
       _ =>
         NotFound
     case _ =>
       _ =>
-        Ok(ClasspathResource(s"/public/index.html"))
+        StaticFile.fromResource[IO](s"/public/index.html").getOrElseF(NotFound())
   }
 
-  val routes: Service = api
-    .orElse(scheduler.publicRoutes(workflow, executor, xa))
-    .orElse(project.authenticator(scheduler.privateRoutes(workflow, executor, xa)))
-    .orElse {
+  val routes: HttpRoutes[IO] = api
+    .combineK(scheduler.publicRoutes(workflow, executor, xa))
+    .combineK(project.authenticator(scheduler.privateRoutes(workflow, executor, xa)))
+    .combineK {
       executor.platforms.foldLeft(PartialFunction.empty: PartialService) {
         case (s, p) => s.orElse(p.publicRoutes).orElse(project.authenticator(p.privateRoutes))
       }

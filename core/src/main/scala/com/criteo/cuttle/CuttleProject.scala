@@ -1,8 +1,12 @@
 package com.criteo.cuttle
 
-import lol.http._
-
-import com.criteo.cuttle.ExecutionContexts._, Implicits.serverExecutionContext
+import cats.effect._
+import org.http4s._
+import org.http4s.dsl.io._
+import com.criteo.cuttle.ExecutionContexts._
+import Implicits.serverExecutionContext
+import org.http4s.server.AuthMiddleware
+import org.http4s.server.blaze.BlazeBuilder
 
 /**
   * A cuttle project is a workflow to execute with the appropriate scheduler.
@@ -11,14 +15,14 @@ import com.criteo.cuttle.ExecutionContexts._, Implicits.serverExecutionContext
   * @tparam S The type of [[Scheduling]] used by the project (for example [[timeseries.TimeSeries TimeSeries]]).
   */
 class CuttleProject[S <: Scheduling] private[cuttle] (
-  val name: String,
-  val version: String,
-  val description: String,
-  val env: (String, Boolean),
-  val workflow: Workflow[S],
-  val scheduler: Scheduler[S],
-  val authenticator: Auth.Authenticator,
-  val logger: Logger
+   val name: String,
+   val version: String,
+   val description: String,
+   val env: (String, Boolean),
+   val workflow: Workflow[S],
+   val scheduler: Scheduler[S],
+   val authenticator: AuthMiddleware[IO, Auth.User],
+   val logger: Logger
 ) {
 
   /**
@@ -43,10 +47,10 @@ class CuttleProject[S <: Scheduling] private[cuttle] (
     scheduler.start(workflow, executor, xa, logger)
 
     logger.info("Start server")
-    Server.listen(port = httpPort, onError = { e =>
-      e.printStackTrace()
-      InternalServerError(e.getMessage)
-    })(App(this, executor, xa).routes)
+    BlazeBuilder[IO]
+      .bindHttp(httpPort)
+      .mountService(App(this, executor, xa).routes, "/")
+      .serve
 
     logger.info(s"Listening on http://localhost:$httpPort")
   }
@@ -99,7 +103,7 @@ object CuttleProject {
                              version: String = "",
                              description: String = "",
                              env: (String, Boolean) = ("", false),
-                             authenticator: Auth.Authenticator = Auth.GuestAuth)(
+                             authenticator: AuthMiddleware[IO, Auth.User] = Auth.GuestAuth)(
     workflow: Workflow[S])(implicit scheduler: Scheduler[S], logger: Logger): CuttleProject[S] =
     new CuttleProject(name, version, description, env, workflow, scheduler, authenticator, logger)
 
