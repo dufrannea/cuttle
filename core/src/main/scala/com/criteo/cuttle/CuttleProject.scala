@@ -5,6 +5,7 @@ import org.http4s._
 import org.http4s.dsl.io._
 import com.criteo.cuttle.ExecutionContexts._
 import Implicits.serverExecutionContext
+import fs2.StreamApp
 import org.http4s.server.AuthMiddleware
 import org.http4s.server.blaze.BlazeBuilder
 
@@ -23,7 +24,7 @@ class CuttleProject[S <: Scheduling] private[cuttle] (
    val scheduler: Scheduler[S],
    val authenticator: AuthMiddleware[IO, Auth.User],
    val logger: Logger
-) {
+) { self =>
 
   /**
     * Start scheduling and execution with the given environment. It also starts
@@ -46,13 +47,15 @@ class CuttleProject[S <: Scheduling] private[cuttle] (
     logger.info("Start workflow")
     scheduler.start(workflow, executor, xa, logger)
 
-    logger.info("Start server")
-    BlazeBuilder[IO]
-      .bindHttp(httpPort)
-      .mountService(App(this, executor, xa).routes, "/")
-      .serve
+    logger.info(s"Starting server on http://localhost:$httpPort")
 
-    logger.info(s"Listening on http://localhost:$httpPort")
+    new StreamApp[IO]() {
+      override def stream(args: List[String], requestShutdown: IO[Unit])
+        : fs2.Stream[IO, StreamApp.ExitCode] =
+        App(self, executor, xa).r(
+          BlazeBuilder[IO].bindHttp(httpPort))
+            .serve
+    }.main(Array.empty[String])
   }
 
   /**
@@ -64,21 +67,21 @@ class CuttleProject[S <: Scheduling] private[cuttle] (
     *
     * @return a tuple with cuttleRoutes (needed to start a server) and a function to start the scheduler
     */
-  def build(
-    platforms: Seq[ExecutionPlatform] = CuttleProject.defaultPlatforms,
-    databaseConfig: DatabaseConfig = DatabaseConfig.fromEnv,
-    retryStrategy: RetryStrategy = RetryStrategy.ExponentialBackoffRetryStrategy
-  ): (HttpRoutes[IO], () => Unit) = {
-    val xa = Database.connect(databaseConfig)
-    val executor = new Executor[S](platforms, xa, logger, name)(retryStrategy)
-
-    val startScheduler = () => {
-      logger.info("Start workflow")
-      scheduler.start(workflow, executor, xa, logger)
-    }
-
-    (App(this, executor, xa).routes, startScheduler)
-  }
+//  def build(
+//    platforms: Seq[ExecutionPlatform] = CuttleProject.defaultPlatforms,
+//    databaseConfig: DatabaseConfig = DatabaseConfig.fromEnv,
+//    retryStrategy: RetryStrategy = RetryStrategy.ExponentialBackoffRetryStrategy
+//  ): (HttpRoutes[IO], () => Unit) = {
+//    val xa = Database.connect(databaseConfig)
+//    val executor = new Executor[S](platforms, xa, logger, name)(retryStrategy)
+//
+//    val startScheduler = () => {
+//      logger.info("Start workflow")
+//      scheduler.start(workflow, executor, xa, logger)
+//    }
+//
+//    (App(this, executor, xa).routes, startScheduler)
+//  }
 }
 
 /**

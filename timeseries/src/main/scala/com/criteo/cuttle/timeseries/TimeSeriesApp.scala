@@ -8,12 +8,16 @@ import scala.util.{Failure, Success, Try}
 import cats.effect.IO
 import cats.implicits._
 import doobie.implicits._
+
 import io.circe._
 import io.circe.generic.auto._
 import io.circe.syntax._
 import io.circe.java8.time._
-import lol.http._
-import lol.json._
+
+import org.http4s._
+import org.http4s.dsl.io._
+import org.http4s.circe._
+
 import com.criteo.cuttle.Auth._
 import com.criteo.cuttle.ExecutionStatus._
 import com.criteo.cuttle._
@@ -95,10 +99,13 @@ private[timeseries] trait TimeSeriesApp { self: TimeSeriesScheduler =>
 
   private[cuttle] override def publicRoutes(workflow: Workflow[TimeSeries],
                                             executor: Executor[TimeSeries],
-                                            xa: XA): PartialService = {
+                                            xa: XA): HttpRoutes[IO] = HttpRoutes.of[IO] {
 
-    case request @ GET at url"/api/timeseries/executions?job=$jobId&start=$start&end=$end" =>
+    case request @ GET -> Root  / "timeseries" / "executions" => //?job=$jobId&start=$start&end=$end" =>
       type WatchedState = ((State, Set[Backfill]), Set[(Job[TimeSeries], TimeSeriesContext)])
+      val jobId = request.params.getOrElse("job", "")
+      val start = request.params.getOrElse("start", "")
+      val end = request.params.getOrElse("end", "")
 
       def watchState(): Option[WatchedState] = Some((state, executor.allFailingJobsWithContext))
 
@@ -170,12 +177,16 @@ private[timeseries] trait TimeSeriesApp { self: TimeSeriesScheduler =>
         runningDependencies ++ failingDependencies ++ remainingDependenciesDeps.toSeq
       }
 
-      if (request.headers.get(h"Accept").contains(h"text/event-stream"))
+      if (request.headers.get(org.http4s.headers.`Accept`).exists(_.values.contains(MediaType.`text/event-stream`)))
         sse(IO { watchState() }, (s: WatchedState) => getExecutions)
       else
-        getExecutions.map(Ok(_))
+        getExecutions >>= (json => Ok(json))
 
-    case request @ GET at url"/api/timeseries/calendar/focus?start=$start&end=$end&jobs=$jobs" =>
+    case request @ GET -> Root  / "timeseries" / "calendar" / "focus" =>
+      val start = request.params.getOrElse("start", "")
+      val end = request.params.getOrElse("end", "")
+      val jobs = request.params.getOrElse("jobs", "")
+
       type WatchedState = ((State, Set[Backfill]), Set[(Job[TimeSeries], TimeSeriesContext)])
 
       val filteredJobs = Try(jobs.split(",").toSeq.filter(_.nonEmpty)).toOption
@@ -327,12 +338,13 @@ private[timeseries] trait TimeSeriesApp { self: TimeSeriesScheduler =>
         )
       }
 
-      if (request.headers.get(h"Accept").contains(h"text/event-stream"))
+      if (request.headers.get(org.http4s.headers.`Accept`).exists(_.values.contains(MediaType.`text/event-stream`)))
         sse(IO { watchState }, (_: WatchedState) => IO(getFocusView))
       else
         Ok(getFocusView)
 
-    case request @ GET at url"/api/timeseries/calendar?jobs=$jobs" =>
+    case request @ GET -> Root  / "timeseries" / "calendar" =>
+      val jobs = request.params.getOrElse("jobs", "")
       val filteredJobs = Try(jobs.split(",").toSeq.filter(_.nonEmpty)).toOption
         .filter(_.nonEmpty)
         .getOrElse(workflow.vertices.map(_.id))
@@ -388,12 +400,13 @@ private[timeseries] trait TimeSeriesApp { self: TimeSeriesScheduler =>
 
       }
 
-      if (request.headers.get(h"Accept").contains(h"text/event-stream"))
+      if (request.headers.get(org.http4s.headers.`Accept`).exists(_.values.contains(MediaType.`text/event-stream`)))
         sse(IO { watchState }, (_: WatchedState) => IO.pure(getCalendar()))
       else
         Ok(getCalendar())
 
-    case GET at url"/api/timeseries/lastruns?job=$jobId" =>
+    case req @ GET -> Root  / "timeseries" / "lastruns"  =>
+      val jobId = req.params.getOrElse("jobs", "")
       val (state, _) = this.state
 
       val successfulIntervalMaps = state
@@ -402,7 +415,7 @@ private[timeseries] trait TimeSeriesApp { self: TimeSeriesScheduler =>
         .flatMap(m => m.toList)
         .filter(i => i._2 == JobState.Done)
 
-      if (successfulIntervalMaps.isEmpty) NotFound
+      if (successfulIntervalMaps.isEmpty) NotFound()
       else {
         (successfulIntervalMaps.head._1.hi, successfulIntervalMaps.last._1.hi) match {
           case (Finite(lastCompleteTime), Finite(lastTime)) =>
@@ -412,11 +425,11 @@ private[timeseries] trait TimeSeriesApp { self: TimeSeriesScheduler =>
                 "lastTime" -> lastTime.asJson
               )
             )
-          case _ => BadRequest
+          case _ => BadRequest()
         }
       }
 
-    case GET at url"/api/timeseries/backfills" =>
+    case GET -> Root  / "timeseries" / "backfills" =>
       Database
         .queryBackfills()
         .to[List]
@@ -435,18 +448,25 @@ private[timeseries] trait TimeSeriesApp { self: TimeSeriesScheduler =>
               "created_by" -> created_by.asJson
             )
         })
-        .transact(xa)
-        .map(backfills => Ok(backfills.asJson))
-    case GET at url"/api/timeseries/backfills/$id?events=$events" =>
+        .transact(xa) >>= (backfills => Ok(backfills.asJson))
+    case request @  GET -> Root  / "timeseries" / "backfills" / id =>
+      val events = request.params.getOrElse("params", "")
       val backfills = Database.getBackfillById(id).transact(xa)
       events match {
         case "true" | "yes" => sse(backfills, (b: Json) => IO.pure(b))
-        case _              => backfills.map(bf => Ok(bf.asJson))
+        case _              => backfills >>= (bf => Ok(bf.asJson))
       }
-    case GET at url"/api/timeseries/backfills/$backfillId/executions?events=$events&limit=$l&offset=$o&sort=$sort&order=$a" => {
+    case req @ GET -> Root  / "timeseries" / "backfills" / backfillId / "executions"  => {
+      // ?events=$events&limit=$l&offset=$o&sort=$sort&order=$a"
+      val events = req.params.getOrElse("params", "")
+      val l = req.params.getOrElse("limit", "")
+      val o = req.params.getOrElse("offset", "")
+      val sort = req.params.getOrElse("sort", "")
+      val a = req.params.getOrElse("order", "")
+
       val limit = Try(l.toInt).toOption.getOrElse(25)
       val offset = Try(o.toInt).toOption.getOrElse(0)
-      val asc = (a.toLowerCase == "asc")
+      val asc = a.toLowerCase == "asc"
       def asTotalJson(x: (Int, Double, Seq[ExecutionLog])) = x match {
         case (total, completion, executions) =>
           Json.obj(
@@ -502,55 +522,54 @@ private[timeseries] trait TimeSeriesApp { self: TimeSeriesScheduler =>
         case "true" | "yes" =>
           sse(allExecutions(), (e: (Int, Double, List[ExecutionLog])) => IO.pure(asTotalJson(e)))
         case _ =>
-          allExecutions().map(_.map(e => Ok(asTotalJson(e))).getOrElse(NotFound))
+          allExecutions() >>= (_.map(e => Ok(asTotalJson(e))).getOrElse(NotFound()))
       }
     }
   }
 
   private[cuttle] override def privateRoutes(workflow: Workflow[TimeSeries],
                                              executor: Executor[TimeSeries],
-                                             xa: XA): AuthenticatedService = {
+                                             xa: XA): AuthedService[User, IO] = AuthedService[User, IO] {
 
-    case req @ POST at url"/api/timeseries/backfill" => {
-      implicit user =>
-        req
-          .readAs[Json]
-          .flatMap(
+    case req @ POST -> Root  / "timeseries" / "backfill" as user => {
+        req.req.decode[Json] {
             _.as[BackfillCreate]
               .fold(
                 df =>
-                  IO.pure(
-                    BadRequest(
-                      s"""
-                     |Error during backfill creation.
-                     |Error: Cannot parse request body.
-                     |$df
-                     |""".stripMargin
-                    )),
+                  BadRequest(
+                    s"""
+                       |Error during backfill creation.
+                       |Error: Cannot parse request body.
+                       |$df
+                       |""".stripMargin
+                  ),
                 backfill => {
                   val jobIds = backfill.jobs.split(",")
                   val jobs = workflow.vertices
                     .filter((job: TimeSeriesJob) => jobIds.contains(job.id))
 
                   backfillJob(backfill.name,
-                              backfill.description,
-                              jobs,
-                              backfill.startDate,
-                              backfill.endDate,
-                              backfill.priority,
-                              executor.runningState,
-                              xa).map {
-                    case Right(_)     => Ok("ok".asJson)
-                    case Left(errors) => BadRequest(errors)
-                  }
+                    backfill.description,
+                    jobs,
+                    backfill.startDate,
+                    backfill.endDate,
+                    backfill.priority,
+                    executor.runningState,
+                    xa)(user) >>= {
+                      case Right(_)     => Ok("ok".asJson)
+                      case Left(errors) => BadRequest(errors)
+                    }
                 }
               )
-          )
+        }
       }
 
     // consider the given period of the job as successful, regardless of it's actual status
-    case req@GET at url"/api/timeseries/force-success?job=$jobId&start=$start&end=$end" => {
-      implicit user =>
+    case req @ GET -> Root  / "timeseries" / "force-success" as user => {
+      val jobId = req.req.params.getOrElse("job", "")
+      val start = req.req.params.getOrElse("start", "")
+      val end  = req.req.params.getOrElse("end", "")
+
         (for {
           startDate <- Try(Instant.parse(start))
           endDate <- Try(Instant.parse(end))
@@ -562,15 +581,15 @@ private[timeseries] trait TimeSeriesApp { self: TimeSeriesScheduler =>
           val runningExecutions = executor.runningExecutions.filter(e => e._1.job.id == jobId).map(_._1)
           val failingExecutions = executor.allFailingExecutions.filter(_.job.id == jobId)
           val executions = runningExecutions ++ failingExecutions
-          executions.foreach(_.cancel())
+          executions.foreach(_.cancel()(user))
 
           (executions.length, JobSuccessForced(Instant.now(), user, jobId, startDate, endDate))
         }) match {
           case Success((canceledExecutions, event)) =>
             queries.logEvent(event).transact(xa)
-              .map(_ => Ok(Json.obj("canceled-executions" -> Json.fromInt(canceledExecutions))))
+              .>>=(_ => Ok(Json.obj("canceled-executions" -> Json.fromInt(canceledExecutions))))
           case Failure(e)                  =>
-            IO.pure(BadRequest(Json.obj("error" -> Json.fromString(e.getMessage))))
+            BadRequest(Json.obj("error" -> Json.fromString(e.getMessage)))
         }
     }
   }

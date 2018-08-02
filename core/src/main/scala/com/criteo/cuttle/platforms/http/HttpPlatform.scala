@@ -8,13 +8,11 @@ import io.circe._
 import io.circe.syntax._
 import com.criteo.cuttle._
 import com.criteo.cuttle.platforms.{ExecutionPool, RateLimiter}
-import cats._
 import cats.implicits._
 import cats.effect._
 import org.http4s._
 import org.http4s.dsl.io._
 import org.http4s.circe._
-import org.http4s.client.blaze.Http1Client
 
 
 /** Allow to make HTTP calls in a managed way with rate limiting. Globally the platform limits the number
@@ -74,7 +72,7 @@ case class HttpPlatform(maxConcurrentRequests: Int, rateLimits: Seq[(String, Htt
       }
       rateLimiters.zipWithIndex.foldLeft(index) {
         case (routes, ((_, rateLimiter), i)) =>
-          routes.combineK(rateLimiter.routes(s"/api/platforms/http/rate-limiters/$i"))
+          routes <+> rateLimiter.routes(s"/api/platforms/http/rate-limiters/$i")
       }
     }
 }
@@ -116,18 +114,12 @@ object HttpPlatform {
           .getOrElse(sys.error(s"A rate limiter should be defined for `$host'"))
 
         rateLimiter.run(execution, debug = request.toString) { () =>
-          Http1Client[IO]() >>= { client =>
+          (Http1Client[IO]() >>= { client: Client[IO] =>
             client.fetch(request) {
-
+              r => IO.fromFuture(IO(thunk(r)))
             }
-          } >> IO.fromFuture(IO(thunk))
+          }).unsafeToFuture()
         }
-//          Client
-//            .run(request, timeout = timeout) { response =>
-//              streams.debug(s"Got response: $response")
-//              IO.fromFuture(IO.pure(thunk(response)))
-//            }
-//            .unsafeToFuture()
       } catch {
         case e: Throwable =>
           Future.failed(e)

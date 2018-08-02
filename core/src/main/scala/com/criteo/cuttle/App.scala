@@ -1,8 +1,11 @@
 package com.criteo.cuttle
 
+import java.util.concurrent.atomic.AtomicInteger
+
 import scala.concurrent.duration._
 import scala.util._
 import cats.Eq
+import cats.data.{Kleisli, OptionT}
 import cats.implicits._
 import fs2.Stream
 import io.circe._
@@ -18,24 +21,36 @@ import org.http4s.HttpRoutes
 import cats.effect._
 import org.http4s._
 import org.http4s.dsl.io._
+import org.http4s.circe._
+import org.http4s.server.ServerBuilder
 
 private[cuttle] object App {
-  // TODO do not use default scheduler
-  def sse[A](thunk: IO[Option[A]], encode: A => IO[Json])(implicit eqInstance: Eq[A]): Response[IO] = {
-    implicit val timer: Timer[IO] = ???
 
-    val stream = (Stream.emit(()) ++ Stream.sleep(1.second)).covary[IO]
+  val streamsOpen = new AtomicInteger(0)
+
+  // TODO do not use default scheduler
+  def sse[A](thunk: IO[Option[A]], encode: A => IO[Json])(implicit eqInstance: Eq[A]): IO[Response[IO]] = {
+    import cats.effect._
+
+    val stream: Stream[IO, ServerSentEvent] = (Stream.eval(IO{
+      println(s"Opening - streams open ${streamsOpen.incrementAndGet()}")
+    }).map(_ => ()) ++ Stream.sleep[IO](1.second))
       .evalMap(_ => IO.shift.flatMap(_ => thunk))
       .flatMap({
         case Some(x) => Stream(x)
         case None    => Stream.raiseError(new RuntimeException("Could not get result to stream"))
       })
       .changes
-      .evalMap(r => encode(r))
-      //.map(ServerSentEvents.Event(_))
+      .evalMap(r => IO(println("lol")) >> encode(r).map(r => {
+        println(r)
+        r
+      }))
+      .map(json => ServerSentEvent(json.noSpaces))
+      .onFinalize(IO {
+        println(s"Closing - streams still open ${streamsOpen.decrementAndGet()}")
+      })
 
-//    Ok(stream)
-    ???
+    Ok(stream)
   }
 
   implicit def projectEncoder[S <: Scheduling] = new Encoder[CuttleProject[S]] {
@@ -164,11 +179,10 @@ private[cuttle] case class App[S <: Scheduling](project: CuttleProject[S], execu
     }
   }
 
-  import org.http4s.circe._
 
   val publicApi: HttpRoutes[IO] = HttpRoutes.of[IO] {
 
-    case GET -> Root / "api" / "status" =>
+    case GET -> Root  / "status" =>
       val projectJson = (status: String) =>
         Json.obj(
           "project" -> project.name.asJson,
@@ -179,7 +193,7 @@ private[cuttle] case class App[S <: Scheduling](project: CuttleProject[S], execu
         case Success(_) => Ok(projectJson("ok"))
         case _          => InternalServerError(projectJson("ko"))
       }
-    case r@GET -> Root / "api" / "statistics" =>
+    case r@GET -> Root  / "statistics" =>
       val jobs = r.params.getOrElse("jobs", "")
       val events = r.params.getOrElse("events", "")
       val jobIds = parseJobIds(jobs)
@@ -204,11 +218,11 @@ private[cuttle] case class App[S <: Scheduling](project: CuttleProject[S], execu
 
       events match {
         case "true" | "yes" =>
-          IO(sse(IO.suspend(getStats), (x: (Json, Json)) => IO(asJson(x))))
+          sse(IO.suspend(getStats), (x: (Json, Json)) => IO(asJson(x)))
         case _ => getStats.>>=(_.map(stat => Ok(asJson(stat))).getOrElse(InternalServerError()))
       }
 
-    case GET -> Root / "api" / "statistics" / jobName =>
+    case GET -> Root  / "statistics" / jobName =>
       executor
         .jobStatsForLastThirtyDays(jobName)
         .flatMap(stats => Ok(stats.asJson))
@@ -222,7 +236,7 @@ private[cuttle] case class App[S <: Scheduling](project: CuttleProject[S], execu
           Gauge("cuttle_jvm_uptime_seconds").labeled(("version", project.version), getJVMUptime)
       Ok(Prometheus.serialize(metrics))
 
-    case r@GET -> Root / "api" / "executions" / "status" / kind =>
+    case r@GET -> Root  / "executions" / "status" / kind =>
       val jobs = r.params.getOrElse("jobs", "")
       val jobIds = parseJobIds(jobs)
       val limit = r.params.get("limit").flatMap(p => Try(p.toInt).toOption).getOrElse(25)
@@ -284,7 +298,7 @@ private[cuttle] case class App[S <: Scheduling](project: CuttleProject[S], execu
 
       events match {
         case "true" | "yes" =>
-          IO(sse(getExecutions, asJson))
+          sse(getExecutions, asJson)
         case _ =>
           getExecutions.flatMap {
             _.map(e => asJson(e).flatMap(json => Ok(json)))
@@ -292,77 +306,80 @@ private[cuttle] case class App[S <: Scheduling](project: CuttleProject[S], execu
           }
       }
 
-    case r@GET -> Root / "api" / "executions" / id =>
+    case r@GET -> Root  / "executions" / id =>
       val events = r.params.getOrElse("events", "")
       def getExecution = IO.suspend(executor.getExecution(scheduler.allContexts, id))
 
       events match {
         case "true" | "yes" =>
-          IO(sse(getExecution, (e: ExecutionLog) => IO(e.asJson)))
+          sse(getExecution, (e: ExecutionLog) => IO(e.asJson))
         case _ =>
           getExecution.flatMap(_.map(e => Ok(e.asJson)).getOrElse(NotFound()))
       }
 
-    case req @ GET -> Root / "api" / "executions" / id / streams =>
+    case req @ GET -> Root  / "executions" / id / streams =>
       lazy val streams = executor.openStreams(id)
-      req.headers.get(org.http4s.headers.Accept).contains(MediaType.`text/event-stream`.withQValue(QValue.One)) match {
-        case true =>
-          Ok(
-            fs2.Stream(ServerSentEvent("BOS".asJson.toString())) ++
-              streams
-                .through(fs2.text.utf8Decode)
-                .through(fs2.text.lines)
-                .chunks
-                .map(chunk => ServerSentEvent(
-                  Json.fromValues(chunk.toArray.toIterable.map(_.asJson)).toString())) ++
-              fs2.Stream(ServerSentEvent("EOS".asJson.toString))
-          )
-        case false =>
-          Ok(streams, org.http4s.headers.`Content-Type`(MediaType.text.plain))
+      import org.http4s.headers._
+
+      if (req.headers.get(org.http4s.headers.Accept).exists(_.values.contains(MediaType.`text/event-stream`))) {
+        Ok(
+          fs2.Stream(ServerSentEvent("BOS".asJson.toString())) ++
+            streams
+              .through(fs2.text.utf8Decode)
+              .through(fs2.text.lines)
+              .chunks
+              .map(chunk => ServerSentEvent(Json.fromValues(chunk.toArray.toIterable.map(_.asJson)).toString())) ++
+            fs2.Stream(ServerSentEvent("EOS".asJson.toString))
+        )
+      } else {
+        Ok(streams, org.http4s.headers.`Content-Type`(MediaType.text.plain))
       }
 
-    case GET -> Root / "api" / "jobs" / "paused" =>
+    case GET -> Root  / "jobs" / "paused" =>
       Ok(executor.pausedJobs.asJson)
 
-    case GET -> Root / "api" / "project_definition" =>
+    case GET -> Root  / "project_definition" =>
       Ok(project.asJson)
 
-    case GET -> Root / "api" / "workflow_definition" =>
+    case GET -> Root  / "workflow_definition" =>
       Ok(workflow.asJson)
   }
 
   val privateApi: AuthedService[User, IO] = AuthedService {
-    case POST -> Root / "api" / "executions" / id / "cancel" as user =>
+    case POST -> Root  / "executions" / id / "cancel" as user =>
       executor.cancelExecution(id)(user)
       Ok()
 
-    case POST -> Root / "api" / "executions" / id / "force" / "success" as user =>
+    case POST -> Root  / "executions" / id / "force" / "success" as user =>
       executor.forceSuccess(id)(user)
       Ok()
 
-    case r@POST -> Root / "api" / "jobs" / "pause" as user =>
+    case r@POST -> Root  / "jobs" / "pause" as user =>
       val jobs = r.req.params.getOrElse("job", "")
       getJobsOrNotFound(jobs).fold(identity, jobs => {
         executor.pauseJobs(jobs)(user)
         Ok()
       })
 
-    case r@POST -> Root / "api" / "jobs" / "resume" as user =>
+    case r@POST -> Root  / "jobs" / "resume" as user =>
       val jobs = r.req.params.getOrElse("job", "")
 
       getJobsOrNotFound(jobs).fold(identity, jobs => {
         executor.resumeJobs(jobs)(user)
         Ok()
       })
-    case POST -> Root / "api" / "jobs" / "all" / "unpause" as user =>
+
+    case POST -> Root  / "jobs" / "all" / "unpause" as user =>
       executor.resumeJobs(workflow.vertices)(user)
       Ok()
-    case POST -> Root / "api" / "jobs" / id / "unpause" as user =>
+
+    case POST -> Root  / "jobs" / id / "unpause" as user =>
       workflow.vertices.find(_.id == id).fold(NotFound()) { job =>
         executor.resumeJobs(Set(job))(user)
         Ok()
       }
-    case r@POST -> Root / "api" / "executions" / "relaunch" as user =>
+
+    case r@POST -> Root  / "executions" / "relaunch" as user =>
       val jobs = r.req.params.getOrElse("jobs", "")
       val filteredJobs = Try(jobs.split(",").toSeq.filter(_.nonEmpty)).toOption
         .filter(_.nonEmpty)
@@ -372,7 +389,7 @@ private[cuttle] case class App[S <: Scheduling](project: CuttleProject[S], execu
       executor.relaunch(filteredJobs)(user)
       Ok()
 
-    case req @ GET -> Root / "api" / "shutdown" as user =>
+    case req @ GET -> Root  / "shutdown" as user =>
       import scala.concurrent.duration._
 
       req.req.params.get("gracePeriodSeconds") match {
@@ -398,26 +415,22 @@ private[cuttle] case class App[S <: Scheduling](project: CuttleProject[S], execu
   import org.http4s.implicits._
 
   val papi: HttpRoutes[IO] = project.authenticator(privateApi)
-  val api: HttpRoutes[IO] = ??? // publicApi.combineK(papi)
 
   val publicAssets: HttpRoutes[IO] = HttpRoutes.of[IO] {
-    case GET -> Root / "public" / file =>
-      StaticFile.fromResource[IO](s"/public/$file").getOrElseF(NotFound())
+    case GET -> Root / file => StaticFile.fromResource[IO](s"/public/$file").getOrElseF(NotFound())
   }
 
   val index: AuthedService[User, IO] = AuthedService[User, IO] {
-    // TODO check
-    case req if req.req.uri.toString().startsWith("/api/") => NotFound()
     case _ =>  StaticFile.fromResource[IO](s"/public/index.html").getOrElseF(NotFound())
   }
 
-  val routes: HttpRoutes[IO] = api
-    .combineK(scheduler.publicRoutes(workflow, executor, xa))
-    .combineK(project.authenticator(scheduler.privateRoutes(workflow, executor, xa)))
-    .combineK {
-      executor.platforms.foldLeft(HttpRoutes.empty[IO]) {
-        case (s, p) => s.combineK(p.publicRoutes).combineK(project.authenticator(p.privateRoutes))
-      }
-    }
-    .combineK(publicAssets.combineK(project.authenticator(index)))
+  def r(b: ServerBuilder[IO]) : ServerBuilder[IO] = {
+    b
+      // scheduler api both authenticated and non authenticated
+      .mountService(scheduler.publicRoutes(workflow, executor, xa) <+> publicApi <+> papi <+> project.authenticator(scheduler.privateRoutes(workflow, executor, xa)), "/api")
+      // non authenticated public assets
+      .mountService(publicAssets, "/public")
+      // authenticated index
+      .mountService(project.authenticator(index), "/")
+  }
 }
