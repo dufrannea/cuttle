@@ -4,16 +4,25 @@ import scala.concurrent.stm._
 import scala.concurrent.duration._
 import java.time._
 
-import lol.http._
-import lol.json._
 import io.circe._
 import io.circe.syntax._
 import io.circe.java8.time._
-import cats.effect.IO
+
+import org.http4s._
+import org.http4s.dsl.io._
+import org.http4s.implicits._
+import org.http4s.circe._
+
+import cats.effect._
+import fs2._
+import org.http4s._
+import org.http4s.implicits._
 import com.criteo.cuttle.utils
 
+import scala.concurrent.ExecutionContext
+
 private[cuttle] object RateLimiter {
-  private val SC = utils.createScheduler("com.criteo.cuttle.platforms.RateLimiter.SC")
+  implicit val SC: ExecutionContext = utils.createExecutionContext("com.criteo.cuttle.platforms.RateLimiter.SC")
 }
 
 /**
@@ -30,10 +39,14 @@ class RateLimiter(tokens: Int, refillRateInMs: Int) extends WaitingExecutionQueu
   private val _tokens = Ref(tokens)
   private val _lastRefill = Ref(Instant.now)
 
-  import scala.concurrent.ExecutionContext.Implicits.global
+  import cats._
+  import cats.implicits._
 
-  RateLimiter.SC
-    .awakeEvery[IO](refillRateInMs.milliseconds)
+  import cats.effect._
+  import cats.effect.implicits._
+  import RateLimiter.SC
+
+  fs2.Stream.awakeEvery[IO](refillRateInMs.milliseconds)
     .flatMap(_ => {
       atomic { implicit txn =>
         if (_tokens() < tokens) {
@@ -50,9 +63,8 @@ class RateLimiter(tokens: Int, refillRateInMs: Int) extends WaitingExecutionQueu
   def canRunNextCondition(implicit txn: InTxn) = _tokens() >= 1
   def doRunNext()(implicit txn: InTxn) = _tokens() = _tokens() - 1
 
-  override def routes(urlPrefix: String) =
-    ({
-      case req if req.url == urlPrefix =>
+  override def routes(urlPrefix: String) = HttpRoutes.of[IO] {
+      case GET -> Root / prefix if prefix == urlPrefix =>
         Ok(
           Json.obj(
             "max_tokens" -> tokens.asJson,
@@ -60,6 +72,6 @@ class RateLimiter(tokens: Int, refillRateInMs: Int) extends WaitingExecutionQueu
             "refill_rate_in_ms" -> refillRateInMs.asJson,
             "last_refill" -> _lastRefill.single.get.asJson
           ))
-    }: PartialService).orElse(super.routes(urlPrefix))
+    }.combineK(super.routes(urlPrefix))
 
 }

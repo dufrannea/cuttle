@@ -4,8 +4,14 @@ import com.criteo.cuttle._
 
 import java.time._
 
-import lol.http._
-import lol.json._
+import io.circe._
+import io.circe.syntax._
+import io.circe.java8.time._
+
+import cats.effect._
+
+import org.http4s._
+import org.http4s.dsl.io._
 
 import scala.concurrent._
 import scala.concurrent.stm._
@@ -14,9 +20,6 @@ import scala.collection.{SortedSet}
 import scala.util._
 import scala.concurrent.ExecutionContext.Implicits.global
 
-import io.circe._
-import io.circe.syntax._
-import io.circe.java8.time._
 
 import App._
 
@@ -107,8 +110,10 @@ trait WaitingExecutionQueue {
     }
   }
 
-  def routes(urlPrefix: String): PartialService = {
-    case req if req.url == s"$urlPrefix/running" =>
+  import org.http4s.circe._
+
+  def routes(urlPrefix: String): HttpRoutes[IO] = HttpRoutes.of[IO] {
+    case GET -> Root / prefix / "running" if  prefix == urlPrefix =>
       Ok(this._running.single.get.toSeq.map {
         case (execution, task) =>
           Json.obj(
@@ -116,7 +121,7 @@ trait WaitingExecutionQueue {
             "task" -> task.asJson
           )
       }.asJson)
-    case req if req.url == s"$urlPrefix/waiting" =>
+    case GET -> Root / prefix / "waiting" if prefix == urlPrefix =>
       Ok(this._waiting.single.get.toSeq.map {
         case (execution, task) =>
           Json.obj(

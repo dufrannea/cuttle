@@ -68,7 +68,7 @@ class CuttleProject[S <: Scheduling] private[cuttle] (
     platforms: Seq[ExecutionPlatform] = CuttleProject.defaultPlatforms,
     databaseConfig: DatabaseConfig = DatabaseConfig.fromEnv,
     retryStrategy: RetryStrategy = RetryStrategy.ExponentialBackoffRetryStrategy
-  ): (Service, () => Unit) = {
+  ): (HttpRoutes[IO], () => Unit) = {
     val xa = Database.connect(databaseConfig)
     val executor = new Executor[S](platforms, xa, logger, name)(retryStrategy)
 

@@ -27,19 +27,8 @@ object Auth {
     implicit val decoder: Decoder[User] = deriveDecoder
   }
 
-  private val authGuestAuth: Kleisli[IO, Request[IO], Either[String, User]] = Kleisli {
-    request => IO(Right(User("Guest")))
-  }
+  private type OptionIO[T] = OptionT[IO, T]
+  private val authUser = Kleisli[OptionIO, Request[IO], User] { _ => OptionT.some[IO](User("Guest")) }
 
-  val didier = AuthedService[String, IO]({ case errReq => AuthMiddleware.defaultAuthFailure[IO](errReq.req) })
-
-  AuthMiddleware(authUser = authGuestAuth, onFailure =  didier)
-
-  val GuestAuth = new AuthMiddleware[IO, User] {
-    override def apply(authedService: Kleisli[({ type lambda[K] = OptionT[IO, K] })#lambda, AuthedRequest[IO, User], Response[IO]]) =
-      Kleisli[({ type lambda[K] = OptionT[IO, K] })#lambda, Request[IO], Response[IO]] {
-        request =>
-          authedService(AuthedRequest[IO, User](User("Guest"), req = request))
-      }
-  }
+  val GuestAuth: AuthMiddleware[IO, User] = AuthMiddleware(authUser)
 }

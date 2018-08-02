@@ -2,19 +2,20 @@ package com.criteo.cuttle
 
 import doobie._
 import doobie.implicits._
-
 import java.util.UUID
 import java.util.concurrent.{Executors, ThreadFactory, TimeUnit}
 import java.lang.management.ManagementFactory
 import java.time.Instant
+import java.util.concurrent.atomic.AtomicInteger
 
 import cats.implicits._
 import cats.effect.IO
+import cats.free.Free
+import doobie.free.connection
+import org.http4s.HttpRoutes
 
 import scala.concurrent.duration.Duration
 import scala.concurrent.{ExecutionContext, Future, Promise}
-
-import lol.http.{PartialService, Service}
 
 /** A set of basic utilities useful to write workflows. */
 package object utils {
@@ -30,10 +31,10 @@ package object utils {
     * @param table Name of the table that keeps track of applied schema changes
     * @param schemaEvolutions List of schema evolutions (should be append-only)
     */
-  def updateSchema(table: String, schemaEvolutions: List[ConnectionIO[_]]) =
-    (for {
+  def updateSchema(table: String, schemaEvolutions: List[ConnectionIO[_]]): Free[connection.ConnectionOp, Unit] =
+    for {
       _ <- Fragment.const(s"""
-        CREATE TABLE IF NOT EXISTS ${table} (
+        CREATE TABLE IF NOT EXISTS $table (
           schema_version  SMALLINT NOT NULL,
           schema_update   DATETIME NOT NULL,
           PRIMARY KEY     (schema_version)
@@ -41,7 +42,7 @@ package object utils {
       """).update.run
 
       currentSchemaVersion <- Fragment.const(s"""
-        SELECT MAX(schema_version) FROM ${table}
+        SELECT MAX(schema_version) FROM $table
       """).query[Option[Int]].unique.map(_.getOrElse(0))
 
       _ <- schemaEvolutions.zipWithIndex.drop(currentSchemaVersion).foldLeft(NoUpdate) {
@@ -51,10 +52,19 @@ package object utils {
             fr"VALUES(${i + 1}, ${Instant.now()})"
           evolutions *> evolution *> insertEvolutionQuery.update.run
       }
-    } yield ())
+    } yield ()
 
-  private[cuttle] def createScheduler(threadPrefix: String): fs2.Scheduler =
-    fs2.Scheduler.allocate[IO](1, daemon = true, threadPrefix, exitJvmOnFatalError = false).unsafeRunSync._1
+    private[cuttle] def createExecutionContext(threadPrefix: String): ExecutionContext = {
+      val threadSuffixCounter = new AtomicInteger(0)
+      ExecutionContext.fromExecutor(Executors.newFixedThreadPool(1, new ThreadFactory {
+        override def newThread(r: Runnable): Thread = {
+          val t = new Thread()
+          t.setDaemon(true)
+          t.setName(s"threadPrefix_${threadSuffixCounter.getAndIncrement}")
+          t
+        }
+      }))
+    }
 
   /** Creates a  [[scala.concurrent.Future Future]] that resolve automatically
     * after the given duration.
@@ -87,18 +97,16 @@ package object utils {
 
   private[cuttle] def randomUUID(): String = UUID.randomUUID().toString
 
+  import cats._
+  import cats.implicits._
+
   /**
     * Allows chaining of method orFinally
     * from a PartialService that returns a
     * non-further-chainable Service.
     */
-  implicit private[cuttle] class PartialServiceConverter(val service: PartialService) extends AnyVal {
-    def orFinally(finalService: Service): Service =
-      service.orElse(toPartial(finalService))
-
-    private def toPartial(service: Service): PartialService = {
-      case e => service(e)
-    }
+  implicit private[cuttle] class PartialServiceConverter(val service: HttpRoutes[IO]) extends AnyVal {
+    def orFinally(finalService: HttpRoutes[IO]): HttpRoutes[IO] = service.combineK(finalService)
   }
 
   private[cuttle] def getJVMUptime = ManagementFactory.getRuntimeMXBean.getUptime / 1000

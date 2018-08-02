@@ -9,7 +9,7 @@ import scala.concurrent.duration._
 import scala.concurrent.stm.Txn.ExternalDecider
 import scala.concurrent.stm._
 import scala.concurrent.{Future, Promise}
-import scala.reflect.{classTag, ClassTag}
+import scala.reflect.{ClassTag, classTag}
 import scala.util.{Failure, Success, Try}
 import cats.Eq
 import cats.effect.IO
@@ -18,11 +18,11 @@ import doobie.implicits._
 import doobie.util.fragment.Fragment
 import io.circe._
 import io.circe.syntax._
-import lol.http.PartialService
 import com.criteo.cuttle.Auth._
 import com.criteo.cuttle.ExecutionContexts.{SideEffectExecutionContext, _}
 import com.criteo.cuttle.Metrics._
 import com.criteo.cuttle.platforms.ExecutionPool
+import org.http4s.{AuthedService, HttpRoutes}
 
 /** The strategy to use to retry stuck executions.
   *
@@ -335,10 +335,10 @@ private[cuttle] object Execution {
 trait ExecutionPlatform {
 
   /** Expose a public `lolhttp` service for the platform internal statistics (for the UI and API). */
-  def publicRoutes: PartialService = PartialFunction.empty
+  def publicRoutes: HttpRoutes[IO] = HttpRoutes.empty
 
   /** Expose a private `lolhttp` service for the platform operations (for the UI and API). */
-  def privateRoutes: AuthenticatedService = PartialFunction.empty
+  def privateRoutes: AuthedService[User, IO] = AuthedService.empty[User, IO]
 
   /** @return the list of [[Execution]] waiting for resources on this platform.
     * These executions will be seen as __WAITING__ in the UI and the API. */
@@ -418,10 +418,9 @@ class Executor[S <: Scheduling] private[cuttle] (val platforms: Seq[ExecutionPla
     }
 
   private def startMonitoringExecutions() = {
-    val SC = utils.createScheduler("com.criteo.cuttle.platforms.ExecutionMonitor.SC")
-
+    // TODO: check EC
     val intervalSeconds = 1
-    SC.awakeEvery[IO](intervalSeconds.second)
+    fs2.Stream.awakeEvery[IO](intervalSeconds.second)
       .map(_ => {
         runningExecutions
           .filter({ case (_, s) => s == ExecutionStatus.ExecutionWaiting })

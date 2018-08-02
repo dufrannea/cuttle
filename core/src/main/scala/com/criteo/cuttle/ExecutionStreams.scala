@@ -4,8 +4,7 @@ import java.io._
 import java.nio.file.Files
 import java.time.Instant
 
-import cats.effect.IO
-
+import cats.effect.{IO, Timer}
 import doobie.implicits._
 
 import scala.concurrent.duration._
@@ -44,8 +43,6 @@ private[cuttle] object ExecutionStreams {
   // Note that we are limited by Int.maxValue
   private val maxExecutionLogSizeProp = "com.criteo.cuttle.maxExecutionLogSize"
   private val maxExecutionLogSize = sys.props.get(maxExecutionLogSizeProp).map(_.toInt).getOrElse(524288)
-  private val SC = utils.createScheduler("com.criteo.cuttle.ExecutionStreams.SC")
-
   logger.info(s"Transient execution streams go to $transientStorage")
 
   private def logFile(id: ExecutionId): File = new File(transientStorage, id)
@@ -81,8 +78,7 @@ private[cuttle] object ExecutionStreams {
     def go(alreadySent: Int = 0): fs2.Stream[IO, Byte] =
       fs2.Stream.eval(IO { streamsAsString(id) }).flatMap {
         case Some(content) =>
-          fs2.Stream.chunk(fs2.Chunk.bytes(content.drop(alreadySent).getBytes("utf8"))) ++ SC.delay(go(content.length),
-                                                                                                    1 second)
+          fs2.Stream.chunk(fs2.Chunk.bytes(content.drop(alreadySent).getBytes("utf8"))) ++ (fs2.Stream.sleep[IO](1.second) >> go(content.length))
         case None =>
           fs2.Stream
             .eval(

@@ -1,12 +1,13 @@
 package com.criteo.cuttle
 
-import lol.http.PartialService
 import io.circe.Json
 import doobie.imports._
 import java.util.Comparator
 
 import Metrics.MetricProvider
 import Auth._
+import cats.effect.IO
+import org.http4s.{AuthedService, HttpRoutes}
 
 /** A scheduler interpret a [[Workflow]] and instanciate [[Execution Executions]] for all
   * defined [[Job Jobs]]. For example, a typical cuttle [[Scheduler]] is the [[timeseries.TimeSeries TimeSeries]]
@@ -26,10 +27,8 @@ trait Scheduler[S <: Scheduling] extends MetricProvider[S] {
     */
   def start(workflow: Workflow[S], executor: Executor[S], xa: XA, logger: Logger): Unit
 
-  private[cuttle] def publicRoutes(workflow: Workflow[S], executor: Executor[S], xa: XA): PartialService =
-    PartialFunction.empty
-  private[cuttle] def privateRoutes(workflow: Workflow[S], executor: Executor[S], xa: XA): AuthenticatedService =
-    PartialFunction.empty
+  private[cuttle] def publicRoutes(workflow: Workflow[S], executor: Executor[S], xa: XA): HttpRoutes[IO] = HttpRoutes.empty
+  private[cuttle] def privateRoutes(workflow: Workflow[S], executor: Executor[S], xa: XA): AuthedService[User, IO] = AuthedService.empty[User, IO]
 
   /** Provide a doobie SQL `Fragment` used to retrieve all execution contexts from
     * the execution logs.

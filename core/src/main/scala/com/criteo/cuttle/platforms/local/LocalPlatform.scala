@@ -2,10 +2,11 @@ package com.criteo.cuttle.platforms.local
 
 import java.nio.ByteBuffer
 
+import cats.effect.IO
 import com.criteo.cuttle._
 import com.criteo.cuttle.platforms.ExecutionPool
 import com.zaxxer.nuprocess._
-import lol.http.PartialService
+import org.http4s.HttpRoutes
 
 import scala.collection.JavaConverters._
 import scala.concurrent.{Future, Promise}
@@ -20,12 +21,12 @@ import scala.concurrent.{Future, Promise}
   * @param maxForkedProcesses The maximum number of concurrently running processes.
   **/
 case class LocalPlatform(maxForkedProcesses: Int) extends ExecutionPlatform {
-  private[local] val pool = new ExecutionPool(concurrencyLimit = maxForkedProcesses)
+  private[local] val pool = ExecutionPool(concurrencyLimit = maxForkedProcesses)
 
   override def waiting: Set[Execution[_]] =
     pool.waiting
 
-  override lazy val publicRoutes: PartialService =
+  override lazy val publicRoutes: HttpRoutes[IO] =
     pool.routes("/api/platforms/local/pool")
 }
 

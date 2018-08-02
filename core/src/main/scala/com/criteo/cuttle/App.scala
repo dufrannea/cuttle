@@ -34,7 +34,7 @@ private[cuttle] object App {
       .evalMap(r => encode(r))
       //.map(ServerSentEvents.Event(_))
 
-    Ok(stream)
+//    Ok(stream)
     ???
   }
 
@@ -154,7 +154,7 @@ private[cuttle] case class App[S <: Scheduling](project: CuttleProject[S], execu
   private def parseJobIds(jobsQueryString: String): Set[String] =
     jobsQueryString.split(",").filter(_.trim().nonEmpty).toSet
 
-  private def getJobsOrNotFound(jobsQueryString: String): Either[Response[IO], Set[Job[S]]] = {
+  private def getJobsOrNotFound(jobsQueryString: String): Either[IO[Response[IO]], Set[Job[S]]] = {
     val jobsNames = parseJobIds(jobsQueryString)
     if (jobsNames.isEmpty) Right(workflow.vertices)
     else {
@@ -163,6 +163,8 @@ private[cuttle] case class App[S <: Scheduling](project: CuttleProject[S], execu
       else Right(jobs)
     }
   }
+
+  import org.http4s.circe._
 
   val publicApi: HttpRoutes[IO] = HttpRoutes.of[IO] {
 
@@ -203,7 +205,7 @@ private[cuttle] case class App[S <: Scheduling](project: CuttleProject[S], execu
       events match {
         case "true" | "yes" =>
           IO(sse(IO.suspend(getStats), (x: (Json, Json)) => IO(asJson(x))))
-        case _ => getStats.map(_.map(stat => Ok(asJson(stat))).getOrElse(InternalServerError))
+        case _ => getStats.>>=(_.map(stat => Ok(asJson(stat))).getOrElse(InternalServerError()))
       }
 
     case GET -> Root / "api" / "statistics" / jobName =>
@@ -340,24 +342,24 @@ private[cuttle] case class App[S <: Scheduling](project: CuttleProject[S], execu
 
     case r@POST -> Root / "api" / "jobs" / "pause" as user =>
       val jobs = r.req.params.getOrElse("job", "")
-      getJobsOrNotFound(jobs).fold(IO.pure, jobs => {
-        executor.pauseJobs(jobs)
+      getJobsOrNotFound(jobs).fold(identity, jobs => {
+        executor.pauseJobs(jobs)(user)
         Ok()
       })
 
     case r@POST -> Root / "api" / "jobs" / "resume" as user =>
       val jobs = r.req.params.getOrElse("job", "")
 
-      getJobsOrNotFound(jobs).fold(IO.pure, jobs => {
-        executor.resumeJobs(jobs)
+      getJobsOrNotFound(jobs).fold(identity, jobs => {
+        executor.resumeJobs(jobs)(user)
         Ok()
       })
     case POST -> Root / "api" / "jobs" / "all" / "unpause" as user =>
-      executor.resumeJobs(workflow.vertices)
+      executor.resumeJobs(workflow.vertices)(user)
       Ok()
     case POST -> Root / "api" / "jobs" / id / "unpause" as user =>
       workflow.vertices.find(_.id == id).fold(NotFound()) { job =>
-        executor.resumeJobs(Set(job))
+        executor.resumeJobs(Set(job))(user)
         Ok()
       }
     case r@POST -> Root / "api" / "executions" / "relaunch" as user =>
@@ -367,7 +369,7 @@ private[cuttle] case class App[S <: Scheduling](project: CuttleProject[S], execu
         .getOrElse(allIds)
         .toSet
 
-      executor.relaunch(filteredJobs)
+      executor.relaunch(filteredJobs)(user)
       Ok()
 
     case req @ GET -> Root / "api" / "shutdown" as user =>
@@ -377,7 +379,7 @@ private[cuttle] case class App[S <: Scheduling](project: CuttleProject[S], execu
         case Some(s) =>
           Try(s.toLong) match {
             case Success(s) if s > 0 =>
-              executor.gracefulShutdown(Duration(s, SECONDS))
+              executor.gracefulShutdown(Duration(s, SECONDS))(user)
               Ok()
             case _ =>
               BadRequest("gracePeriodSeconds should be a positive integer")
@@ -403,23 +405,19 @@ private[cuttle] case class App[S <: Scheduling](project: CuttleProject[S], execu
       StaticFile.fromResource[IO](s"/public/$file").getOrElseF(NotFound())
   }
 
-  val index: AuthedService[IO, User] = AuthedService[User, IO] {
+  val index: AuthedService[User, IO] = AuthedService[User, IO] {
     // TODO check
-    case req if req.req.uri.toString().startsWith("/api/") =>
-      _ =>
-        NotFound
-    case _ =>
-      _ =>
-        StaticFile.fromResource[IO](s"/public/index.html").getOrElseF(NotFound())
+    case req if req.req.uri.toString().startsWith("/api/") => NotFound()
+    case _ =>  StaticFile.fromResource[IO](s"/public/index.html").getOrElseF(NotFound())
   }
 
   val routes: HttpRoutes[IO] = api
     .combineK(scheduler.publicRoutes(workflow, executor, xa))
     .combineK(project.authenticator(scheduler.privateRoutes(workflow, executor, xa)))
     .combineK {
-      executor.platforms.foldLeft(PartialFunction.empty: PartialService) {
-        case (s, p) => s.orElse(p.publicRoutes).orElse(project.authenticator(p.privateRoutes))
+      executor.platforms.foldLeft(HttpRoutes.empty[IO]) {
+        case (s, p) => s.combineK(p.publicRoutes).combineK(project.authenticator(p.privateRoutes))
       }
     }
-    .orElse(publicAssets orElse project.authenticator(index))
+    .combineK(publicAssets.combineK(project.authenticator(index)))
 }
