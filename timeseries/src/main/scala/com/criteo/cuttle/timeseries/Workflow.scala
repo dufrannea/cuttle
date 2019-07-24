@@ -49,13 +49,7 @@ trait Workflow extends Workload[TimeSeries] {
 
   // Returns a list of jobs in the workflow sorted topologically, using Kahn's algorithm. At the
   // same time checks that there is no cycle.
-  private[cuttle] lazy val jobsInOrder: List[Job[TimeSeries]] = graph.topologicalSort[Job[TimeSeries]](
-    vertices,
-    edges.map { case (child, parent, _) => parent -> child }
-  ) match {
-    case Some(sortedNodes) => sortedNodes
-    case None              => throw new IllegalArgumentException("Workflow has at least one cycle")
-  }
+  private[cuttle] lazy val jobsInOrder: List[Job[TimeSeries]] = vertices.toList.sortBy(x => x.id)
 
   /**
     * Compose a [[Workflow]] with another [[Workflow]] but without any
@@ -118,30 +112,5 @@ object Workflow {
     * - absence of jobs with the same id
     *  @return the list of errors in the workflow, if any
     */
-  def validate(workflow: Workflow): List[String] = {
-    val errors = collection.mutable.ListBuffer.empty[String]
-
-    if (graph
-          .topologicalSort[Job[TimeSeries]](
-            workflow.vertices,
-            workflow.edges.map { case (child, parent, _) => parent -> child }
-          )
-          .isEmpty) {
-      errors += "Workflow has at least one cycle"
-    }
-
-    graph
-      .findStronglyConnectedComponents[Job[TimeSeries]](
-        workflow.vertices,
-        workflow.edges.map { case (child, parent, _) => parent -> child }
-      )
-      .filter(scc => scc.size >= 2) // Strongly connected components with more than 2 jobs are cycles
-      .foreach(scc => errors += s"{${scc.map(job => job.id).mkString(",")}} form a cycle")
-
-    workflow.vertices.groupBy(_.id).collect {
-      case (id: String, jobs) if jobs.size > 1 => id
-    } foreach (id => errors += s"Id $id is used by more than 1 job")
-
-    errors.toList
-  }
+  def validate(workflow: Workflow): List[String] = List.empty
 }

@@ -1090,20 +1090,7 @@ object TimeSeriesUtils {
     * @param workflow workflow to be validated
     * @return either a validation errors list or a unit
     */
-  def validate(workflow: Workflow): Either[List[String], Unit] = {
-    val errors = collection.mutable.ListBuffer(Workflow.validate(workflow): _*)
-
-    workflow.edges.map {
-      case (childJob, parentJob, _) =>
-        if (childJob.scheduling.start.isBefore(parentJob.scheduling.start)) {
-          errors += s"Job [${childJob.id}] starts at [${childJob.scheduling.start.toString}] " +
-            s"before his parent [${parentJob.id}] at [${parentJob.scheduling.start.toString}]"
-        }
-    }
-
-    if (errors.nonEmpty) Left(errors.toList)
-    else Right(())
-  }
+  def validate(workflow: Workflow): Either[List[String], Unit] = Right(())
 
   /**
     * Filter potentially incorrect state intervals which were the result of bugs in previous versions. These bugs were mainly

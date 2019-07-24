@@ -11,7 +11,7 @@ lazy val lolhttp = "0.12.0"
 lazy val commonSettings = Seq(
   organization := "com.criteo.cuttle",
   version := VERSION,
-  scalaVersion := "2.11.11",
+  scalaVersion := "2.12.3",
   crossScalaVersions := Seq("2.11.11", "2.12.3"),
   scalacOptions ++= Seq(
     "-deprecation",
@@ -211,7 +211,7 @@ lazy val timeseries =
     .settings(commonSettings: _*)
     .settings(
       libraryDependencies ++= Seq(
-        "ch.vorburger.mariaDB4j" % "mariaDB4j" % "2.3.0" % "test"
+        "ch.vorburger.mariaDB4j" % "mariaDB4j" % "2.3.0"
       ))
     .settings(
       // Webpack

@@ -110,17 +110,38 @@ export const prepareWorkflow = (w: Workflow): Workflow => ({
   getJob(id: string) {
     return this.jobs.find(job => job.id == id);
   },
-  getParents(id: string) {
+  getParents(id: string, visited: Set<string> = new Set([])) {
     let parents = this.dependencies
-      .filter(({ to }) => to == id)
+      .filter(({ to }) => !visited.has(to) && to == id)
       .map(({ from }) => from);
-    return parents.concat(_.flatMap(parents, this.getParents.bind(this)));
+
+    let nv = new Set([]);
+    parents.forEach(p => {
+      nv.add(p);
+    });
+    visited.forEach(p => {
+      nv.add(p);
+    });
+    return parents.concat(
+      _.flatMap(parents, v => this.getParents.apply(this, [v, nv]))
+    );
   },
-  getChildren(id: string) {
+  getChildren(id: string, visited: Set<string> = new Set([])) {
     let childrens = this.dependencies
-      .filter(({ from }) => from == id)
+      .filter(({ from }) => !visited.has(from) && from == id)
       .map(({ to }) => to);
-    return childrens.concat(_.flatMap(childrens, this.getChildren.bind(this)));
+
+    let nv = new Set([]);
+    childrens.forEach(p => {
+      nv.add(p);
+    });
+    visited.forEach(p => {
+      nv.add(p);
+    });
+
+    return childrens.concat(
+      _.flatMap(childrens, v => this.getChildren.apply(this, [v, nv]))
+    );
   },
   getTagged(tag: string) {
     return this.jobs
