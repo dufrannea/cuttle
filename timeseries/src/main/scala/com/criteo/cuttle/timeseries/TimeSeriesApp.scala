@@ -738,6 +738,34 @@ private[timeseries] case class TimeSeriesApp(project: CuttleProject,
         getExecutions(watchedState).map(Ok(_))
       }
 
+    case GET at url"/api/timeseries/incomplete-executions/jobs=$jobIds&start=$start&end=$end" =>
+      import cats.implicits._
+      import cats.data.Validated
+
+      def parseInstant(s: String): Validated[List[String], Instant] =
+        Try(Instant.parse(s)).toOption.toValid(List(s"Instant badly formatted: '$s'"))
+
+      val filteredIds: Set[String] = jobIds.split(",").toSet.filterNot(_.isEmpty)
+      val parsedArguments: Validated[List[String], (List[Job[TimeSeries]], Interval[Instant])] =
+        (
+          filteredIds.toList.traverse(id => project.jobs.all.find(_.id == id).toValid(List(s"Missing job $id"))),
+          (parseInstant(start), parseInstant(end)).mapN({ case (s, e) => Interval(s, e) })
+        ).tupled
+
+      parsedArguments.fold(errors => BadRequest(errors.mkString("\n")), { case (filteredJobs, period) =>
+        val (schedulerState, _) = scheduler.state
+        val notDoneExecutions = filteredJobs.toList.flatMap(job => {
+          schedulerState(job).intersect(period).toList.filter({
+            case (interval, Done(_)) => false
+            case _ => true
+          }).map({ 
+            case (interval, status) => (job.id, status, interval) 
+          }).toList
+        })
+  
+        Ok(notDoneExecutions.asJson)
+      })
+
     case GET at url"/api/timeseries/calendar/focus?start=$start&end=$end&jobs=$jobs" =>
       val filteredJobs = Option(jobs.split(",").toSet.filterNot(_.isEmpty))
         .filterNot(_.isEmpty)
